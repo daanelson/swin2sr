@@ -5,6 +5,7 @@ import torch
 from cog import BasePredictor, Input, Path
 
 from main_test_swin2sr import define_model, test
+from models.optimized_swin2sr import Swin2SR as net
 
 
 class Predictor(BasePredictor):
@@ -12,27 +13,40 @@ class Predictor(BasePredictor):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Loading pipeline...")
 
-        self.device = "cuda:0"
+        # self.device = "cuda:0"
 
-        args = argparse.Namespace()
-        args.scale = 4
-        args.large_model = False
+        # args = argparse.Namespace()
+        # args.scale = 4
+        # args.large_model = False
 
-        tasks = ["classical_sr", "compressed_sr", "real_sr"]
-        paths = [
-            "weights/Swin2SR_ClassicalSR_X4_64.pth",
-            "weights/Swin2SR_CompressedSR_X4_48.pth",
-            "weights/Swin2SR_RealworldSR_X4_64_BSRGAN_PSNR.pth",
-        ]
-        sizes = [64, 48, 128]
+        # tasks = ["classical_sr", "compressed_sr", "real_sr"]
+        # paths = [
+        #     "weights/Swin2SR_ClassicalSR_X4_64.pth",
+        #     "weights/Swin2SR_CompressedSR_X4_48.pth",
+        #     "weights/Swin2SR_RealworldSR_X4_64_BSRGAN_PSNR.pth",
+        # ]
+        # sizes = [64, 48, 128]
 
-        self.models = {}
-        for task, path, size in zip(tasks, paths, sizes):
-            args.training_patch_size = size
-            args.task, args.model_path = task, path
-            self.models[task] = define_model(args)
-            self.models[task].eval()
-            self.models[task] = self.models[task].to(self.device)
+        # self.models = {}
+        # for task, path, size in zip(tasks, paths, sizes):
+        #     args.training_patch_size = size
+        #     args.task, args.model_path = task, path
+        #     self.models[task] = define_model(args)
+        #     self.models[task].eval()
+        #     self.models[task] = self.models[task].to(self.device)
+        self.device = "cuda"
+        model_path = "weights/Swin2SR_RealworldSR_X4_64_BSRGAN_PSNR.pth"
+        self.model = net(upscale=4, in_chans=3, img_size=64, window_size=8,
+                        img_range=1., depths=[6, 6, 6, 6, 6, 6], embed_dim=180, num_heads=[6, 6, 6, 6, 6, 6],
+                        mlp_ratio=2, upsampler='nearest+conv', resi_connection='1conv')
+        param_key_g = 'params_ema'
+        pretrained_model = torch.load(model_path)
+        self.model.load_state_dict(pretrained_model[param_key_g] if param_key_g in pretrained_model.keys() else pretrained_model, strict=True)
+        self.model.eval()
+        self.model.to("cuda")
+        self.opt_model = torch.compile(self.model, backend='inductor')
+
+
 
     def predict(
         self,
@@ -45,7 +59,7 @@ class Predictor(BasePredictor):
     ) -> Path:
         """Run a single prediction on the model"""
 
-        model = self.models[task]
+        model = self.opt_model
 
         window_size = 8
         scale = 4
@@ -80,7 +94,6 @@ class Predictor(BasePredictor):
                 st = time.time()
                 output = model(img_lq)
                 print(f"pred time: {time.time() - st}")
-
 
             if task == "compressed_sr":
                 output = output[0][..., : h_old * scale, : w_old * scale]
